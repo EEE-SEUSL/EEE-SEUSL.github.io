@@ -1,0 +1,32 @@
+name: Fetch GitHub Discussions
+on:
+  push:
+    branches:
+      - main  # Trigger the workflow on pushes to the main branch
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight (optional)
+
+jobs:
+  fetch-discussions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Fetch discussions data from GitHub API
+        env:
+          GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}  # Use the same secret as before
+        run: |
+          response=$(curl -s -H "Authorization: token $GH_API_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/EEE-SEUSL/.github/discussions")
+          echo "$response" > discussions.json
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add -A  # Stage all changes
+          git commit -m "Auto-commit discussions data" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push --force origin main

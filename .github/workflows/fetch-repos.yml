@@ -1,0 +1,31 @@
+name: Fetch GitHub Repositories
+on:
+  push:
+    branches:
+      - main  # Trigger the workflow on pushes to the main branch
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight (optional)
+jobs:
+  fetch-repos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Fetch repository data from GitHub API
+        env:
+          GH_API_TOKEN: ${{ secrets.GH_API_TOKEN }}  # Use a secret to store your GitHub API token
+        run: |
+          response=$(curl -s -H "Authorization: token $GH_API_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/orgs/EEE-SEUSL/repos?sort=updated&per_page=6")
+          echo "$response" > repos.json
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add -A  # Stage all changes
+          git commit -m "Auto-commit changes" || echo "No changes to commit"
+          git pull --rebase origin main
+          git push origin main
