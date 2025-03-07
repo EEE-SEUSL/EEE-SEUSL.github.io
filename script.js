@@ -184,13 +184,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 // Fetch and display discussions
+
 async function fetchDiscussions() {
     try {
-        const response = await fetch('discussions.json'); // Fetch data from the local JSON file
+        const response = await fetch('discussions.json');
         if (!response.ok) {
             throw new Error('Failed to fetch discussions');
         }
-
         const discussions = await response.json();
         const discussionsContainer = document.getElementById('discussions-container');
         if (discussionsContainer) {
@@ -202,8 +202,8 @@ async function fetchDiscussions() {
                         </a>
                     </h3>
                     <div class="discussion-body">
-                        ${marked.parse(truncateContent(discussion.body || 'No content provided.'))}
-                        ${discussion.body.length > 200 ? `
+                        ${getContentPreview(discussion.body || 'No content provided.')}
+                        ${discussion.body && discussion.body.length > 200 ? `
                             <button class="read-more" onclick="toggleReadMore(this)">Read More</button>
                             <div class="full-content" style="display: none;">
                                 ${marked.parse(discussion.body)}
@@ -233,12 +233,63 @@ async function fetchDiscussions() {
     }
 }
 
+// Get a meaningful text preview, skipping over images and other non-text content
+function getContentPreview(content, maxLength = 200) {
+    if (!content) return '';
+    
+    // Strip out image markdown links (both formats)
+    const noImageContent = content
+        .replace(/!\[.*?\]\(.*?\)/g, '') // ![alt](url) format
+        .replace(/!\[.*?\]\[.*?\]/g, '') // ![alt][ref] format
+        .replace(/<img.*?>/g, '');       // HTML image tags
+    
+    // Strip other markdown formatting that might not be meaningful in a preview
+    const cleanContent = noImageContent
+        .replace(/\[.*?\]\(.*?\)/g, '$1') // Replace links with just their text
+        .replace(/#{1,6}\s/g, '')         // Remove heading markers
+        .replace(/(`{1,3}).*?\1/g, '')    // Remove code blocks
+        .replace(/\n/g, ' ')              // Replace newlines with spaces
+        .trim();
+    
+    // If we have viable text content after cleaning
+    if (cleanContent.length > 0) {
+        return marked.parse(truncateContent(cleanContent, maxLength));
+    }
+    
+    // If no text content was found after filtering out images
+    return marked.parse('Preview not available. Click "Read More" to view content.');
+}
+
 // Truncate long content
 function truncateContent(content, maxLength = 200) {
-    if (content.length > maxLength) {
-        return content.substring(0, maxLength) + '...';
+    // If content is already short enough, return it as is
+    if (!content || content.length <= maxLength) {
+        return content;
     }
-    return content;
+    
+    // Find a good break point - prefer end of sentence or word
+    let breakPoint = maxLength;
+    const possibleBreaks = ['. ', '! ', '? ', '; ', ', '];
+    
+    // Try to find a natural breakpoint within the last 30 characters
+    for (const breakChar of possibleBreaks) {
+        const lastBreak = content.lastIndexOf(breakChar, maxLength);
+        if (lastBreak > maxLength - 30) {
+            breakPoint = lastBreak + 1; // Include the period/punctuation
+            break;
+        }
+    }
+    
+    // If no good sentence break was found, at least break at a word boundary
+    if (breakPoint === maxLength) {
+        // Find last space within the limit
+        const lastSpace = content.lastIndexOf(' ', maxLength);
+        if (lastSpace > 0) {
+            breakPoint = lastSpace;
+        }
+    }
+    
+    return content.substring(0, breakPoint) + '...';
 }
 
 // Toggle "Read More" functionality
@@ -257,5 +308,3 @@ function toggleReadMore(button) {
 if (window.location.pathname.includes('discussions.html')) {
     document.addEventListener('DOMContentLoaded', fetchDiscussions);
 }
-
-
