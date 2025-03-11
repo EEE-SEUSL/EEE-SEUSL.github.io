@@ -33,14 +33,70 @@ jobs:
                "https://api.github.com/orgs/EEE-SEUSL/repos?per_page=100" \
                > data/projects.json
         
-      - name: Fetch discussions data
+      - name: Try to fetch team discussions
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -H "Authorization: token $GITHUB_TOKEN" \
-               -H "Accept: application/vnd.github.discussions-preview+json" \
-               "https://api.github.com/orgs/EEE-SEUSL/teams/discussions/discussions?per_page=100" \
-               > data/discussions.json || echo "Discussions API may not be available for this organization"
+          # First check if the team exists
+          TEAM_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                     -H "Accept: application/vnd.github.v3+json" \
+                     "https://api.github.com/orgs/EEE-SEUSL/teams" | jq '.[] | select(.slug=="discussions") | .id')
+          
+          if [ -n "$TEAM_ID" ]; then
+            # If team exists, try to fetch discussions
+            HTTP_STATUS=$(curl -s -o data/discussions.json -w "%{http_code}" \
+                          -H "Authorization: token $GITHUB_TOKEN" \
+                          -H "Accept: application/vnd.github.discussions-preview+json" \
+                          "https://api.github.com/teams/$TEAM_ID/discussions?per_page=100")
+            
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "Failed to fetch discussions, status code: $HTTP_STATUS"
+              # Create empty discussions array on failure
+              echo '[]' > data/discussions.json
+            fi
+          else
+            echo "No 'discussions' team found in the organization"
+            # Create empty discussions array
+            echo '[]' > data/discussions.json
+          fi
+        
+      - name: Alternative: Fetch repository discussions
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # If team discussions failed, try repository discussions
+          if [ ! -s data/discussions.json ] || [ "$(cat data/discussions.json)" = "[]" ]; then
+            echo "Attempting to fetch repository discussions instead..."
+            
+            # Get repositories from the already fetched data
+            REPOS=$(cat data/projects.json | jq -r '.[].name')
+            
+            # Create empty array for all discussions
+            echo '[]' > data/discussions.json
+            
+            # Loop through each repository and try to fetch discussions
+            for REPO in $REPOS; do
+              echo "Checking discussions for repo: $REPO"
+              
+              # Use GraphQL to get discussions (newer API)
+              curl -s -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\": \"query { repository(owner: \\\"EEE-SEUSL\\\", name: \\\"$REPO\\\") { discussions(first: 10) { nodes { title url createdAt updatedAt author { login avatarUrl } category { name } comments { totalCount } } } } }\"}" \
+                "https://api.github.com/graphql" | jq '.data.repository.discussions.nodes' > "data/temp_discussions.json"
+              
+              # If we got some discussions, merge them into the main file
+              if [ -s "data/temp_discussions.json" ] && [ "$(cat data/temp_discussions.json)" != "null" ]; then
+                jq -s '.[0] + .[1]' data/discussions.json data/temp_discussions.json > data/temp_combined.json
+                mv data/temp_combined.json data/discussions.json
+              fi
+            done
+            
+            rm -f data/temp_discussions.json || true
+          fi
+          
+          # If we still don't have discussions, use sample data (handled by the later step)
         
       - name: Fetch team members data
         env:
@@ -170,7 +226,7 @@ jobs:
           fi
           
           # Sample discussions data
-          if [ ! -s data/discussions.json ]; then
+          if [ ! -s data/discussions.json ] || [ "$(cat data/discussions.json)" = "[]" ]; then
             echo '[
               {
                 "id": 1,
