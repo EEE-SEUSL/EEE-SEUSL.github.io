@@ -1,0 +1,316 @@
+name: Update GitHub Data
+
+on:
+  schedule:
+    # Run every day at midnight
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed for pushing changes
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Create data directory if it doesn't exist
+        run: mkdir -p data
+        
+      - name: Fetch repositories data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -H "Authorization: token $GITHUB_TOKEN" \
+               -H "Accept: application/vnd.github.v3+json" \
+               "https://api.github.com/orgs/EEE-SEUSL/repos?per_page=100" \
+               > data/projects.json
+        
+      - name: Fetch discussions data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -H "Authorization: token $GITHUB_TOKEN" \
+               -H "Accept: application/vnd.github.discussions-preview+json" \
+               "https://api.github.com/orgs/EEE-SEUSL/teams/discussions/discussions?per_page=100" \
+               > data/discussions.json || echo "Discussions API may not be available for this organization"
+        
+      - name: Fetch team members data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get organization members with admin role (core team)
+          curl -H "Authorization: token $GITHUB_TOKEN" \
+               -H "Accept: application/vnd.github.v3+json" \
+               "https://api.github.com/orgs/EEE-SEUSL/members?role=admin&per_page=100" \
+               > data/team.json
+        
+      - name: Fetch contributors data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get top contributors across all repositories
+          node -e "
+            const fs = require('fs');
+            const https = require('https');
+            
+            // Read repos data
+            const repos = JSON.parse(fs.readFileSync('data/projects.json', 'utf8'));
+            
+            // Function to fetch contributors for a repo
+            const fetchContributors = (repo) => {
+              return new Promise((resolve, reject) => {
+                const options = {
+                  headers: {
+                    'Authorization': 'token ${{ secrets.GITHUB_TOKEN }}',
+                    'User-Agent': 'GitHub-Data-Fetcher',
+                    'Accept': 'application/vnd.github.v3+json'
+                  }
+                };
+                
+                https.get(`https://api.github.com/repos/${repo.full_name}/contributors?per_page=100`, options, (res) => {
+                  let data = '';
+                  res.on('data', (chunk) => data += chunk);
+                  res.on('end', () => {
+                    try {
+                      resolve(JSON.parse(data));
+                    } catch (e) {
+                      resolve([]);
+                    }
+                  });
+                }).on('error', reject);
+              });
+            };
+            
+            // Process all repos and combine contributors
+            const processRepos = async () => {
+              const contributorsMap = new Map();
+              
+              for (const repo of repos) {
+                try {
+                  const repoContributors = await fetchContributors(repo);
+                  
+                  for (const contributor of repoContributors) {
+                    if (!contributorsMap.has(contributor.id)) {
+                      contributorsMap.set(contributor.id, contributor);
+                    } else {
+                      // Update existing contributor with higher contributions count
+                      const existing = contributorsMap.get(contributor.id);
+                      if (contributor.contributions > existing.contributions) {
+                        contributorsMap.set(contributor.id, contributor);
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.error(`Error fetching contributors for ${repo.name}:`, error);
+                }
+              }
+              
+              // Convert map to array and sort by contributions
+              const allContributors = Array.from(contributorsMap.values())
+                .sort((a, b) => b.contributions - a.contributions)
+                .slice(0, 50); // Limit to top 50 contributors
+              
+              fs.writeFileSync('data/contributors.json', JSON.stringify(allContributors, null, 2));
+            };
+            
+            processRepos().catch(console.error);
+          "
+        
+      - name: Create sample data if API calls fail
+        run: |
+          # Check if files exist and have content, if not create sample data
+          
+          # Sample projects data
+          if [ ! -s data/projects.json ]; then
+            echo '[
+              {
+                "id": 1,
+                "name": "project-one",
+                "full_name": "EEE-SEUSL/project-one",
+                "html_url": "https://github.com/EEE-SEUSL/project-one",
+                "description": "A sample project with a description",
+                "stargazers_count": 42,
+                "forks_count": 10,
+                "language": "JavaScript",
+                "updated_at": "2023-01-15T12:00:00Z"
+              },
+              {
+                "id": 2,
+                "name": "project-two",
+                "full_name": "EEE-SEUSL/project-two",
+                "html_url": "https://github.com/EEE-SEUSL/project-two",
+                "description": "Another sample project",
+                "stargazers_count": 28,
+                "forks_count": 5,
+                "language": "TypeScript",
+                "updated_at": "2023-02-20T15:30:00Z"
+              },
+              {
+                "id": 3,
+                "name": "project-three",
+                "full_name": "EEE-SEUSL/project-three",
+                "html_url": "https://github.com/EEE-SEUSL/project-three",
+                "description": "A third sample project",
+                "stargazers_count": 15,
+                "forks_count": 3,
+                "language": "Python",
+                "updated_at": "2023-03-10T09:45:00Z"
+              }
+            ]' > data/projects.json
+          fi
+          
+          # Sample discussions data
+          if [ ! -s data/discussions.json ]; then
+            echo '[
+              {
+                "id": 1,
+                "title": "Welcome to our organization!",
+                "html_url": "https://github.com/EEE-SEUSL/discussions/1",
+                "category": {
+                  "name": "Announcements",
+                  "slug": "announcements"
+                },
+                "author": {
+                  "login": "admin-user",
+                  "avatar_url": "https://github.com/identicons/admin-user.png"
+                },
+                "comments": 5,
+                "created_at": "2023-01-01T10:00:00Z",
+                "updated_at": "2023-01-05T14:30:00Z",
+                "reactions": {
+                  "total_count": 10
+                }
+              },
+              {
+                "id": 2,
+                "title": "How to contribute to our projects",
+                "html_url": "https://github.com/EEE-SEUSL/discussions/2",
+                "category": {
+                  "name": "General",
+                  "slug": "general"
+                },
+                "author": {
+                  "login": "contributor-one",
+                  "avatar_url": "https://github.com/identicons/contributor-one.png"
+                },
+                "comments": 8,
+                "created_at": "2023-01-10T11:15:00Z",
+                "updated_at": "2023-01-12T16:45:00Z",
+                "reactions": {
+                  "total_count": 7
+                }
+              },
+              {
+                "id": 3,
+                "title": "Feature request: Add dark mode to our website",
+                "html_url": "https://github.com/EEE-SEUSL/discussions/3",
+                "category": {
+                  "name": "Ideas",
+                  "slug": "ideas"
+                },
+                "author": {
+                  "login": "contributor-two",
+                  "avatar_url": "https://github.com/identicons/contributor-two.png"
+                },
+                "comments": 12,
+                "created_at": "2023-01-15T09:30:00Z",
+                "updated_at": "2023-01-20T13:20:00Z",
+                "reactions": {
+                  "total_count": 15
+                }
+              }
+            ]' > data/discussions.json
+          fi
+          
+          # Sample team data
+          if [ ! -s data/team.json ]; then
+            echo '[
+              {
+                "login": "team-member-one",
+                "id": 1,
+                "avatar_url": "https://github.com/identicons/team-member-one.png",
+                "html_url": "https://github.com/team-member-one",
+                "name": "Team Member One",
+                "role": "Founder & Lead Developer",
+                "twitter_username": "teammemberone",
+                "blog": "https://teammember.one"
+              },
+              {
+                "login": "team-member-two",
+                "id": 2,
+                "avatar_url": "https://github.com/identicons/team-member-two.png",
+                "html_url": "https://github.com/team-member-two",
+                "name": "Team Member Two",
+                "role": "Core Developer",
+                "twitter_username": null,
+                "blog": null
+              },
+              {
+                "login": "team-member-three",
+                "id": 3,
+                "avatar_url": "https://github.com/identicons/team-member-three.png",
+                "html_url": "https://github.com/team-member-three",
+                "name": "Team Member Three",
+                "role": "Documentation Lead",
+                "twitter_username": "teammemberthree",
+                "blog": "https://teammember.three"
+              }
+            ]' > data/team.json
+          fi
+          
+          # Sample contributors data
+          if [ ! -s data/contributors.json ]; then
+            echo '[
+              {
+                "login": "contributor-one",
+                "id": 101,
+                "avatar_url": "https://github.com/identicons/contributor-one.png",
+                "html_url": "https://github.com/contributor-one",
+                "contributions": 42
+              },
+              {
+                "login": "contributor-two",
+                "id": 102,
+                "avatar_url": "https://github.com/identicons/contributor-two.png",
+                "html_url": "https://github.com/contributor-two",
+                "contributions": 38
+              },
+              {
+                "login": "contributor-three",
+                "id": 103,
+                "avatar_url": "https://github.com/identicons/contributor-three.png",
+                "html_url": "https://github.com/contributor-three",
+                "contributions": 27
+              },
+              {
+                "login": "contributor-four",
+                "id": 104,
+                "avatar_url": "https://github.com/identicons/contributor-four.png",
+                "html_url": "https://github.com/contributor-four",
+                "contributions": 19
+              },
+              {
+                "login": "contributor-five",
+                "id": 105,
+                "avatar_url": "https://github.com/identicons/contributor-five.png",
+                "html_url": "https://github.com/contributor-five",
+                "contributions": 15
+              }
+            ]' > data/contributors.json
+          fi
+        
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add data/
+          git commit -m "Update GitHub data" || echo "No changes to commit"
+          git push
