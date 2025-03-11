@@ -53,76 +53,78 @@ jobs:
                > data/team.json
         
       - name: Fetch contributors data
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get top contributors across all repositories
-          node -e "
-            const fs = require('fs');
-            const https = require('https');
-            
-            // Read repos data
-            const repos = JSON.parse(fs.readFileSync('data/projects.json', 'utf8'));
-            
-            // Function to fetch contributors for a repo
-            const fetchContributors = (repo) => {
-              return new Promise((resolve, reject) => {
-                const options = {
-                  headers: {
-                    'Authorization': 'token ${{ secrets.GITHUB_TOKEN }}',
-                    'User-Agent': 'GitHub-Data-Fetcher',
-                    'Accept': 'application/vnd.github.v3+json'
-                  }
-                };
-                
-                https.get(`https://api.github.com/repos/${repo.full_name}/contributors?per_page=100`, options, (res) => {
-                  let data = '';
-                  res.on('data', (chunk) => data += chunk);
-                  res.on('end', () => {
-                    try {
-                      resolve(JSON.parse(data));
-                    } catch (e) {
-                      resolve([]);
-                    }
-                  });
-                }).on('error', reject);
-              });
-            };
-            
-            // Process all repos and combine contributors
-            const processRepos = async () => {
-              const contributorsMap = new Map();
-              
-              for (const repo of repos) {
-                try {
-                  const repoContributors = await fetchContributors(repo);
-                  
-                  for (const contributor of repoContributors) {
-                    if (!contributorsMap.has(contributor.id)) {
-                      contributorsMap.set(contributor.id, contributor);
-                    } else {
-                      // Update existing contributor with higher contributions count
-                      const existing = contributorsMap.get(contributor.id);
-                      if (contributor.contributions > existing.contributions) {
-                        contributorsMap.set(contributor.id, contributor);
-                      }
-                    }
-                  }
-                } catch (error) {
-                  console.error(`Error fetching contributors for ${repo.name}:`, error);
+          # Create contributor fetching script
+          cat > fetch_contributors.js << 'EOL'
+          const fs = require('fs');
+          const https = require('https');
+          
+          // Read repos data
+          const repos = JSON.parse(fs.readFileSync('data/projects.json', 'utf8'));
+          
+          // Function to fetch contributors for a repo
+          const fetchContributors = (repo) => {
+            return new Promise((resolve, reject) => {
+              const options = {
+                headers: {
+                  'Authorization': 'token ' + process.env.GITHUB_TOKEN,
+                  'User-Agent': 'GitHub-Data-Fetcher',
+                  'Accept': 'application/vnd.github.v3+json'
                 }
-              }
+              };
               
-              // Convert map to array and sort by contributions
-              const allContributors = Array.from(contributorsMap.values())
-                .sort((a, b) => b.contributions - a.contributions)
-                .slice(0, 50); // Limit to top 50 contributors
-              
-              fs.writeFileSync('data/contributors.json', JSON.stringify(allContributors, null, 2));
-            };
+              const url = `https://api.github.com/repos/${repo.full_name}/contributors?per_page=100`;
+              https.get(url, options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => data += chunk);
+                res.on('end', () => {
+                  try {
+                    resolve(JSON.parse(data));
+                  } catch (e) {
+                    resolve([]);
+                  }
+                });
+              }).on('error', reject);
+            });
+          };
+          
+          // Process all repos and combine contributors
+          const processRepos = async () => {
+            const contributorsMap = new Map();
             
-            processRepos().catch(console.error);
-          "
+            for (const repo of repos) {
+              try {
+                const repoContributors = await fetchContributors(repo);
+                
+                for (const contributor of repoContributors) {
+                  if (!contributorsMap.has(contributor.id)) {
+                    contributorsMap.set(contributor.id, contributor);
+                  } else {
+                    // Update existing contributor with higher contributions count
+                    const existing = contributorsMap.get(contributor.id);
+                    if (contributor.contributions > existing.contributions) {
+                      contributorsMap.set(contributor.id, contributor);
+                    }
+                  }
+                }
+              } catch (error) {
+                console.error(`Error fetching contributors for ${repo.name}:`, error);
+              }
+            }
+            
+            // Convert map to array and sort by contributions
+            const allContributors = Array.from(contributorsMap.values())
+              .sort((a, b) => b.contributions - a.contributions)
+              .slice(0, 50); // Limit to top 50 contributors
+            
+            fs.writeFileSync('data/contributors.json', JSON.stringify(allContributors, null, 2));
+          };
+          
+          processRepos().catch(console.error);
+          EOL
+          
+          # Run the script with the GitHub token as an environment variable
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} node fetch_contributors.js
         
       - name: Create sample data if API calls fail
         run: |
